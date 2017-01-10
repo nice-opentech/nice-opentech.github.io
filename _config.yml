@@ -1,9 +1,9 @@
 # Site settings
-title: "来自火星的老司机们<br />Old drivers from Mars"
+title: "来自火星的老司机们"
 author: "nice-opentech"
-description: "This is a blog about internet develop, architecture, and thinking."
+description: "来自火星互联网开发者技术博客"
 keywords: ""
-biography: "我们是来自火星的老司机, Follow我们, 等我们回去时带你一起飞."
+biography: "WE ARE OLD DRIVERS, WE ARE FROM MARS!"
 colophon: "© <a href='http://www.oneniceapp.com/about'>nice-opentech</a><br>Content available under <a href='http://creativecommons.org/licenses/by-nc-sa/4.0/'>Creative Commons (BY-NC-SA)</a> unless otherwise noted.<br>This site is hosted at <a href='https://pages.github.com/'>Github Pages</a> and created with <a href='http://jekyllrb.com/'>Jekyll</a>."
 
 baseurl: ""
