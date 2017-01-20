@@ -199,7 +199,7 @@ opcache支持多种共享内存模型: mmap, shm, posix, win32.
 
   * 在进入分配前, 先确定一次内存块大小: 以SEG_ALLOC_SIZE_MAX为初值, 以1/2的速度衰减, 直到找到一个不大于请求空间2倍大小的值.
 
-  > 以默认的```opcache.memory_consumption = 64M```为例, 此时确认的快大小就直接为SEG_ALLOC_SIZE_MAX [32M]
+  > 以默认的```opcache.memory_consumption = 64M```为例, 此时确认的块大小就直接为SEG_ALLOC_SIZE_MAX [32M]
 
   * 接着, 尝试按这个块大小分配共享内存, 如果成功则退出, 否则以1/2的速度衰减, 衰减到SEG_ALLOC_SIZE_MIN仍然无法成功分配, 则宣告失败.
 
@@ -217,7 +217,7 @@ opcache支持多种共享内存模型: mmap, shm, posix, win32.
 
 ## opcache对共享内存的管理
 
-opcache的共享内存, 只用于缓存自身工作需要, 以及脚本的编译结果. 因此, 并不涉及一般内存管理中的回收利用, 碎片等问题.
+opcache的共享内存, 只用于缓存自身工作需要, 以及脚本的编译结果. 被缓存的数据基本很长周期都不会变更, 因此它的内存回收利用实现的很粗放, 只是简单的判断碎片率高的时候, 重置从头再来.
 
 当一个脚本的opcode被认为不可用了. 那就设置其zend_persisitent_script.corrupted = 1. 标记失效即可.
 
@@ -363,9 +363,9 @@ zend_accel_hash_entry *bucket = zend_accel_hash_str_find_entry(&ZCSG(hash), key,
 
 如果此刻, 仍然没有拿到脚本缓存, 或者上述校验认为缓存不可用. 首先尝试文件缓存(如果开启```opcache.file_cache```). 否则, 进入编译和封装过程:
 
-  * ```opcache_compile_file```函数封装了opcache中对编译过程的封装.
+  * ```opcache_compile_file```函数中, opcache为了获取文件的编译结果, 对编译过程进行了额外的处理.
 
-  * 第一步将Zend编译过程产出结果的关键数据结构Mock
+  * 第一步将Zend编译过程产出结果的关键数据结构Mock(用自己的临时变量替换掉).
 
 ```c
 /* Save the original values for the op_array, function table and class table */
@@ -398,7 +398,7 @@ zend_try {
 } zend_end_try();
 ```
 
-  * 第三步, 然后还原全局的编译环境.
+  * 第三步, 然后还原全局的编译环境(编译实际产出, 在自己的临时变量中).
 
   * 完成编译之后, opcache会将这些中间结果, 封装成一个zend_persisitent_script对象.
 
@@ -416,9 +416,9 @@ zend_try {
 
 # Opcache的重置过程
 
-Opcache的重置, 设计是类似事件驱动的一个模式.
+Opcache的重置, 设计上是一个类似事件驱动的模式.
 
-真正的重置, 发生在每次请求过来, 执行opcache扩展的激活时. [[参见: Opcache的请求启动过程](#idx-topic-startup:request)]
+真正的重置, 发生在每次请求过来, 执行opcache扩展的激活时.
 
 在```accel_activate```中, 它检测ZCSG(restart_pending)状态, 这个状态在共享内存中.
 
