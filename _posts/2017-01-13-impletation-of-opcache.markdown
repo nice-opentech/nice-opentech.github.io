@@ -166,15 +166,15 @@ static zend_module_entry accel_module_entry = {
 
 三个关键的宏分别为:
 
-* ZSSM(element): 共享内存管理区
+* ZSMMG(element): 共享内存管理区
 * ZCSG(element): 共享全局变量
 * ZCG(element): 进程内全局变量
 
-如图左边黑线描述的部分, Opcache在初始化共享内存时, 首先会将ZSSM对应的共享内存管理区变量, 在进程的本地栈空间创建, 并在堆中分配一个区域(```ZSSM(shared_segments)```), 用来持有将要创建的各个共享内存块的指针及一些其他信息.
+如图左边黑线描述的部分, Opcache在初始化共享内存时, 首先会将ZSMMG对应的共享内存管理区变量, 在进程的本地栈空间创建, 并在堆中分配一个区域(```ZSMMG(shared_segments)```), 用来持有将要创建的各个共享内存块的指针及一些其他信息.
 
 接着, 通过shmget()创建出所需个数及大小的共享内存块.[[点击查看shm的内存块策略](#idx-topic-shm-memory-strategy)]
 
-在创建出实际的共享内存区后, 它会接着把ZSSM自身, 以及```ZSSM(shared_segments)```拷贝到共享内存中去, 使其形成上图右侧蓝线描述的结构.
+在创建出实际的共享内存区后, 它会接着把ZSMMG自身, 以及```ZSMMG(shared_segments)```拷贝到共享内存中去, 使其形成上图右侧蓝线描述的结构.
 
 最终, 三个关键的宏对应的内存如图右侧红线所示.
 
