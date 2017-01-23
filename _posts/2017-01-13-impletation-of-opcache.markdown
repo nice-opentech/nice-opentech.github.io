@@ -1,6 +1,7 @@
 ---
 layout: post
 title: OPCache源码分析 | Opcache原理 | PHP字节码缓存
+posttitle: OPCache源码分析
 date: 2017-01-13 10:44
 comments: true
 keywords: Opcache 原理 PHP 字节码 缓存
