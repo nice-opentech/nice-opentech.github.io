@@ -1,8 +1,10 @@
 ---
 layout: post
-title: OPCache源码分析
+title: OPCache源码分析 | Opcache原理 | PHP字节码缓存
 date: 2017-01-13 10:44
 comments: true
+keywords: Opcache 原理 PHP 字节码 缓存
+description: Opcache是PHP世界中最有名的项目之一, 它将PHP编译产生的字节码缓存到共享内存中, 在下次请求需要相同文件时, 直接从缓存读取字节码执行. 本文主要从Opcache源代码的角度, 对其主要流程进行分析介绍.
 external-url:
 categories: PHP-Core
 ---
