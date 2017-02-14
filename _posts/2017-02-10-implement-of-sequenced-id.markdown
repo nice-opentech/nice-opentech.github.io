@@ -16,7 +16,7 @@ categories: ID生成器
 
 ### 目录
 
-1. [63位整形ID生成器算法](#idx-int-63-bit-id-generate-algorithm)
+1. [63位整形ID生成器算法(当并发大时，向未来借毫秒分配ID)](#idx-int-63-bit-id-generate-algorithm)
 
 2. [ID生成器提供的命令](#idx-support-command)
 
@@ -29,7 +29,7 @@ categories: ID生成器
 <a id="idx-int-63-bit-id-generate-algorithm" />
 
 <hr/>
-### 1.63位整形ID生成器算法(当并发很大时，可向未来借毫秒来分配未来的ID)
+### 1.63位整形ID生成器算法(当并发大时，向未来借毫秒分配ID)
 
 ```c
 // 文件: src/redis.c
