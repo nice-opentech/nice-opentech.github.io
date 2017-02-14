@@ -186,6 +186,7 @@ static long long generateId() {
 	42bit(millisecond) + server_id_range(2bit, 可配置) + shard_range(9bit，可配置) + random_range(10bit, 可配置) = 63 bit;
 
 单位毫秒内可使用的ID是有限的，若超出后，会有日志输出, 类似如下，向前借了1ms:
+
 ```
 [35695] 10 Feb 17:21:18.464 # warning > id=139842471327704136, ctime=66676878464, rtime=66681044992, bms=4166528, shard=2133262345, rand=72, sprc=0, sfrc=0, borrow=1
 ```
@@ -202,11 +203,13 @@ static long long generateId() {
 使用go语言做高并发请求，发送redis命令:
 
 单ID请求: 最大qps: 9w qps左右, 不会产生借毫秒
+
 ```
-redis-cli -h host -p port getid
+    redis-cli -h host -p port getid
 ```
 
 多ID请求: 最大qps: 5000 qps左右，会产生借毫秒的情况
+
 ```
-redis-cli -h host -p port getid 100
+    redis-cli -h host -p port getid 100
 ```
