@@ -29,7 +29,7 @@ categories: ID生成器
 <a id="idx-int-63-bit-id-generate-algorithm" />
 
 <hr/>
-### 1.63位整形ID生成器算法
+### 1.63位整形ID生成器算法(当并发很大时，可向未来借毫秒来分配未来的ID)
 
 ```c
 // 文件: src/redis.c
