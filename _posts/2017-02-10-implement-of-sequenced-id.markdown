@@ -188,8 +188,9 @@ static long long generateId() {
 单位毫秒内可使用的ID是有限的，若超出后，会有日志输出, 类似如下，向前借了1ms:
 
 ```
-[35695] 10 Feb 17:21:18.464 # warning > id=139842471327704136, ctime=66676878464, rtime=66681044992, bms=4166528, shard=2133262345, rand=72, sprc=0, sfrc=0, borrow=1
+    [35695] 10 Feb 17:21:18.464 # warning > id=139842471327704136, ctime=66676878464, rtime=66681044992, bms=4166528, shard=2133262345, rand=72, sprc=0, sfrc=0, borrow=1
 ```
+
 若使用过程中，经常出现该警告，说明qps > (2 ^ shard_range) * 1000; (如shard_range = 9，则会超过: 512000 qps才会出现借毫秒), 这时可以将random_range调小点，则可满足使用场景
 
 
