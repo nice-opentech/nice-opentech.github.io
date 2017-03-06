@@ -14,23 +14,128 @@ categories: ID生成器
 
 <b>项目使用的源代码[github]</b>: *<a target="blank" href="https://github.com/nice-opentech/id-generator-base-on-redis">id-generator-base-on-redis</a>*
 
-### 目录
+## 目录
+1. [为什么需要ID生成器](#idx-why-need-id-generator)
+2. [ID生成器的特点](#idx-id-generator-features)
+3. [ID生成器如何保证有序](#idx-how-id-generator-sequenced)
+4. [ID生成器系统架构选择](#idx-id-generator-system-arch-select)
+5. [毫秒内超过shard-range请求次数时，采用借毫秒的方式超前分配ID](#idx-exceed-shard-range-use-borrow-ms)
+6. [借毫秒分配ID算法](#idx-borrow-ms-algorithm)
+7. [关键代码实现](#idx-id-generator-key-code)
+8. [Redis命令支持](#idx-id-generator-redis-command)
+9. [压测](#idx-id-generator-press-test)
+10. [ID生成器服务部署](#idx-id-generator-service-deploy)
+11. [issues](#idx-id-generator-issues)
 
-1. [63位整形ID生成器算法(当并发大时，向未来借毫秒分配ID)](#idx-int-63-bit-id-generate-algorithm)
 
-2. [ID生成器提供的命令](#idx-support-command)
 
-3. [为何选择redis做改造](#idx-why-choose-redis)
-
-4. [极端问题考虑](#idx-extreme-emergency-think)
-
-5. [生成ID数据统计](#idx-statistics)
-
-<a id="idx-int-63-bit-id-generate-algorithm" />
-
+<a id="idx-why-need-id-generator" />
 <hr/>
-### 1.63位整形ID生成器算法(当并发大时，向未来借毫秒分配ID)
+## 1.为什么需要ID生成器
 
+现如今，大多数互联网公司的数据都相当大，一个持久化的db根本没法存储或者单库单表根本不符合高性能，高吞吐量的标准，因此都采取了分库分表的逻辑来提高读写性能。但分库分表后，主键就不能唯一表示一个
+实体了，因为每个表有自己的主键，这就要求有一个全局的主键来确定单一实体，因此需要一个全局的、中心化的、高性能的ID生成器。
+
+<a id="idx-id-generator-features" />
+## 2.ID生成器的特点
+    
+2.1. 高性能、高可用、高并发访问
+        
+> 分库分表后，写的压力其实没有变，所有的单表都需要同时去拿一个ID生成器的唯一ID，而随着业务的增多，分库分表将成为每个业务的常态，这就对ID生成器提出高性能、高可用、高并发访问的要求。
+
+2.2. 对于所有实体的ID来说，数字是最好的选择, 使用64位整形作为唯一ID
+
+> 分库分表前，大家的业务开发都是采取单表的自增ID实现了主键的逻辑，在业务中都有类似getByID的方法获取实体信息，分库分表后，
+  为了更好的的兼容迁移逻辑，业务上更多的无感知，尤其是已发版的(Android|iOS)客户端，采用数字最为合理；另外，随着数据的增多，
+  32位数能表示的范围【(2^31 - 1) = 2147483647】可能不足以满足互联网的快速数据增长的需求，因此采用64未长整型比较合适; 
+
+2.3. ID必须是时序的
+        
+> 业务上很多地方，对id可能有排序的要求，或者最新的列表等，保证id是有序的，减少业务的逻辑错误，这请参考 3. ID生成器如何保证有序.
+        
+<a id="idx-how-id-generator-sequenced"/>
+## 3. ID生成器如何保证有序
+
+3.1 利用时间+有序数保证
+
+ID由64位数字组成，由于数字有一个符号位，因此可用的应该是63位，采用毫秒时间戳加上和有序数组成， 如下结构:
+<img src="/image/posts/2017-03-06-64bit-long-int-unique-id-structure.jpeg" />
+具体解释如下:
+
+* 符号位: 1bit
+
+* 毫秒时间戳: microtime(): 42bit
+
+>    为了保证递增，采取毫秒时间戳，这样至少在单位毫秒内，数字是递增的，同时另外的福利是，这样的设计，server将是无状态的，所以即使重启也不会影响数据.
+
+* ID生成器server标识: server-id: 2bit
+
+>    为了高可用，一个server很难确保不会挂掉，因此采用多机集群部署，为了防止各个server产生的ID相同，因此每个server给定一个标识，该数字可以分配多位，
+    分配两位即可以部署4台机器，一位即可以部署两台机器，这样保证了每个server生成的id不一样，且实现了高可用, 注意: server-id会让毫秒内的id从多个server拿出来的
+    id顺序不一致，如果并发不是那么高，并对顺序要求很严格，可以只部署一台
+
+* 毫秒内不重复循环数: shard-range: 9bit
+
+>    该数字是一个毫秒内可以出的数字的总数，2^9 = 512个数，这是循环读取的，保证一个毫秒内不会取到相同的数字，关于一个毫秒内超过了shard-range的上限怎么办？
+    请参考：[毫秒内超过shard-range请求次数时，采用借毫秒的方式超前分配id](#idx-exceed-shard-range-use-borrow-ms)
+
+* 随机数: random_range: 10bit
+>    这是在使用中遇到的问题，id读取后，可能出现不均匀的情况，因为大部分分表都是按照唯一ID取模分表，比如模1024，如果一旦产生的id不均匀，这会导致某些分表很大，这
+    就达不到分表的效果了。
+
+<strong>根据以上结构，单实例但毫秒内请求低于512都不会出现重复的数字</strong>
+
+<a id="idx-id-generator-system-arch-select"/>
+## 4. ID生成器系统架构选择
+
+4.1 使用Redis来做改造
+
+> Redis是高性能的缓存服务器，这很符合ID生成器的要求，同时我们的业务中大量使用了Redis作为缓存，因此业务上比较容易接入。同时部署和运维上，Redis相对比较成熟，
+> 其源代码也很优秀，改造成本低，减少出bug的可能
+
+<a id="idx-exceed-shard-range-use-borrow-ms" />
+## 5. 毫秒内超过shard-range请求次数时，采用借毫秒的方式超前分配ID
+
+对于高并发，出现毫秒内超过shard-range的请求次数时，比如 shard-range = 9, 则 520 qpms, 520000 qps请求，这时，可以采用借未来的毫秒进行分配ID，这样即使超过了
+分配的ID也是不重复的。
+
+注意: 
+    
+> 若出现借秒的情况时，可以布置多个实例来平均分配压力，极端情况下，如果一直借毫秒，当server重启时，可能会出现ID重复的可能
+
+<a id="idx-borrow-ms-algorithm" />
+## 6. 借毫秒分配ID算法
+
+类似于加法进位的原理，只是这里的进制是shard-range的大小，(以下假设shard-range = 9, shard-max = 2 ^ 9 = 512), 进制为512，当超过时，毫秒进位1：
+```    
+//当前时间
+current_time = (mstime() - ID_START_TIMESTAMP);
+
+//相对于当前时间，已经过去的shard数
+shard_passed_relate_current = 0;
+//向未来借的shard数
+shard_future_relate_current = 0;
+
+//当时间变更时，做一次进位变换
+if(current_time != server.id_last_time){
+    //已经过去的shard数为，(当前时间 - 上一次记录时间) * shard_max
+    shard_passed_relate_current = (current_time - server.id_last_time) << server.shard_range;
+    //未来借的shard数
+    shard_future_relate_current = server.cur_shard - shard_passed_relate_current;
+    //若借的shard数为负值，说明这段时间内，有部分shard未使用完成，因此清零
+    server.cur_shard = shard_future_relate_current > 0 ? shard_future_relate_current : 0;
+    //变换时间
+    server.id_last_time = current_time;
+}
+
+//id真正的时间，当前时间 + 进位参数的时间(shard超过shard_max之后才有借位)
+real_used_time = current_time + floor(server.cur_shard / server.shard_max);
+//shard每次加一
+server.cur_shard ++;
+```
+
+<a id="idx-id-generator-key-code" />
+## 7. 关键代码实现
 ```c
 // 文件: src/redis.c
 static long long generateId() {
@@ -39,23 +144,6 @@ static long long generateId() {
 
     if(current_time != server.id_last_time){
         shard_passed_relate_current = (current_time - server.id_last_time) << server.shard_range;
-
-        /**
-         * if (shard_future_relate_current > 0) {
-         *      we have borrowed some ms from future
-         * } eles if (shard_future_relate_current < 0){
-         *      duration from last time to current time, no request
-         * } else if (shard_future_relate_current == 0){
-         *      last time shard range has run out, so the new ms can service and not borrow ms from future
-         * }
-         * so server.cur_shard = maxInt(0, shard_future_relate_current) mean:
-         *  if(shard_future_relate_current > 0) {
-         *      we have borrowed some ms, so the real_used_time will plus borrowed ms ->
-         *          real_used_time = current_time + floor(server.cur_shard / server.shard_max);
-         *  } else if(shard_future_relate_current <=0){
-         *      some has passed ms not used, so ignore it and record from current
-         *  }
-         */
         shard_future_relate_current = server.cur_shard - shard_passed_relate_current;
         server.cur_shard = shard_future_relate_current > 0 ? shard_future_relate_current : 0;
         server.id_last_time = current_time;
@@ -76,112 +164,149 @@ static long long generateId() {
     server.cur_shard ++;
     return id;
 }
+```
+
+<a id="idx-id-generator-redis-command" />
+## 8. Redis命令支持
+	
+8.1. GETID 
+
+	get one squenced id 
+
+Return value
+
+	the value of 64 bit squenced id
+
+Examples:
+
+```
+redis> GETID
+(integer) 144182182078841378
+```
+
+
+8.2. MGETID count
+
+	get multi sequenced ids, the max count is 100
+
+Return value
+
+	list of sequenced ids.
+
+Examples:
+
+```
+redis> MGETID 10
+ 1) "144182328657183537"
+ 2) "144182328657184499"
+ 3) "144182328657185133"
+ 4) "144182328657186040"
+ 5) "144182328657187118"
+ 6) "144182328657188278"
+ 7) "144182328657189411"
+ 8) "144182328657190557"
+ 9) "144182328657191123"
+10) "144182328657192148"
+```
+
+<a id="idx-id-generator-press-test" />
+## 9. 压测
+机器配置:
+
+    内存64G, 32核处理器, centos 7
+
+测试程序:
+
+```go
+package main
+
+import (
+	"flag"
+	"fmt"
+	"github.com/garyburd/redigo/redis"
+	"runtime"
+	"sync"
+	"time"
+)
+
+func Connect(address string, times int, wg *sync.WaitGroup) {
+	defer wg.Done()
+	wg.Add(1)
+	conn, err := redis.Dial("tcp", address)
+	if err != nil {
+		return
+	}
+	//for i := 0; i < times; i++ {
+	for {
+		res, err := redis.Int(conn.Do("GETID"))
+		//res, err := redis.Strings(conn.Do("MGETID", 100))
+		
+		if err != nil {
+			fmt.Println(err.Error())
+			continue
+		}
+
+		time.Sleep(time.Millisecond * 10)
+
+		t := time.Now()
+		log := fmt.Sprintf("%d-%d-%d %d:%d:%d %d", t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), res)
+		fmt.Println(log)
+	}
+}
+
+func main() {
+	runtime.GOMAXPROCS(-1)
+	var num, times int
+	flag.IntVar(&num, "num", 5, "ddddd")
+	flag.IntVar(&times, "times", 1000, "times")
+	flag.Parse()
+	var wg sync.WaitGroup
+	for i := 0; i < num; i++ {
+		go Connect("host:6551", times, &wg)
+	}
+	time.Sleep(time.Second * 1)
+	wg.Wait()
+}
 
 ```
 
-这个函数是生成ID的整个流程，去掉了写日志的逻辑，总体算法如下:
+单ID请求: 最大qps: 9w qps左右, 不会产生借毫秒
 
-1.	id构成
+多ID请求: 最大qps: 5000 qps左右，会产生借毫秒的情况
 
-	总长度63位，因为php的是有符号整数
+<strong>注: 若qps更高，应该多实例部署，平均压力到每个实例上，同时得接受这样产生的数据会在毫秒内不连续</strong>
 
-	42bit(millisecond) + server_id_range(2bit, 可配置) + shard_range(9bit，可配置) + random_range(10bit, 可配置) = 63 bit;
+<a id="idx-id-generator-service-deploy" />
+## 10. ID生成器服务部署
 
-	说明: 
-
-    1. 配置必须满足: server_id_range + shard_range + random_range = 21 bit
-    2. 前42bit: 是毫秒的时间戳 
-    3. server_id_range: 用于布置多台实例，如果只布置一个，可以用一位，那shard_range就可以多一位了,
-    4. shard_range: 单个毫秒内可用的不重复的ID总数, 9bit = 2^9 = 512，即一毫秒最多产生512个ID
-    5. random_range: 随机数，因为目前我们的表是1024个分表，所以采用了2^10 = 1024个数，这样读取的数据最终可以均匀的分配到以ID取模的所有分表中
-
-2.	函数算法
-
-	总体分为四步:
-
-    2.1. 获取当前的毫秒数，并初始化向未来借秒数 = 0
-    
-    2.2. 当毫秒变化时，对shard的处理，这里的逻辑主要是可能向未来借毫秒的作用
 ```
-    1. shard_passed_relate_current = (current_time - server.id_last_time) << server.shard_range		
-        获取上一毫秒到当前毫秒已经过了的shard总数，一个毫秒就是用幂函数表示是: 2^server.shard_range，
-        为了运算更快，使用移位 << server.shard_range
-    
-    2. shard_future_relate_current = server.cur_shard - shard_passed_relate_current;
+git clone git@github.com:nice-opentech/id-generator-base-on-redis.git
 
-        若shard_future_relate_current > 0:
-        	表明向未来借了毫秒了，因为上一毫秒到当前毫秒的ID已经被使用完了，因此产生
-            新的ID时，需要从新的shard开始计算，即要算未来的时间
-    
-        若shard_future_relate_current <= 0:
-        	表明上一毫秒的ID还未使用完
-    
-    3. server.cur_shard = shard_future_relate_current > 0 ? shard_future_relate_current : 0;
-        变换cur_shard值，server.cur_shard开始时初始化为0, 每次生成新的ID后会++[见倒数第二行]，
-        该值代表了获取到的ID数，因为时间在更新，所以可以将cur_shard和时间关联上，每次不同毫秒
-        均会对cur_shard进行处理，变更情况如下:
-    
-        若未产生借毫秒 shard_future_relate_current <=0, 则cur_shard = 0，表示该毫秒内的ID未被使用过
-    
-        若产生借毫秒 shard_future_relate_current >0, 则cur_shard = shard_future_relate_current，
-            表示该毫秒内的ID被使用过, 或未来的毫秒被使用了
+编辑配置redis.conf:
+	#id generator config
+	# id total length is 63 bit, millisecond use 42 bit, so the remain bit is 21 bit
+	# you can config server-id, id-range, id-shard, random-range freedom and confirm the sum of their bits is 21 bit
+	#   id-range + shard-range + random-range = 21
+	# server-id      0 ~ 3
+	# id-range      use 2 bit  ;    0 ~ 3       ; 2^2 = 4
+	# shard-range   use 9 bit  ;    0 ~ 511     ; 2^9 = 512
+	# random-range  use 10 bit ;    0 ~ 1023    ; 2^10 = 1024
+	
+	id-generator server-id 0 id-range 2 shard-range 9 random-range 10
+
+编译:
+	make
+
+启动服务:
+	src/id-redis-server redis.conf
 ```
-    2.3. 生成ID
-    
-    	long long real_used_time = current_time + floor(server.cur_shard / server.shard_max);
 
-    	由于有可能产生借毫秒的可能，单位毫秒时间超过shard_range的总数, (eg: shard_range = 9, 
-        则一毫秒超过512个ID时会产生借毫秒), 因此应该加上借的毫秒数
+<a id="idx-id-generator-issues" />
+## 9. issues
 
-    	server.shard_max = 1 << shard_range; 即毫秒内的ID总数，这里的即毫秒的意义类似于加法进位
-        的概念，只是这里的进位是shard_range的总数，(eg: shard_range = 9, 这进制是512)
-
-    	long long id = real_used_time << 21;
-    	将毫秒右移21位，这样后面的21位供余下的数据填充
-
-    	id |= server.server_id << (21 - server.id_range); 
-    	或上server_id，只右移(21 - server.id_range)位
-
-    	id |= server.cur_shard << (21 - server.id_range - server.shard_range);
-    	或上server.cur_shard，只右移(21 - server.id_range - server.shard_range)位
-
-    	id |= server.random_sequences[server.cur_random];
-    	或上随机数，该随机数时程序启动时，初始化的随机打乱的总长度为2^random_range个元素的数组，
-        后续直接通过顺序访问随机数组即可达到随机的状态			
-    
-    
-    2.4. 随机数做rotate，不停的循环使用, cur_shard++，表示生成了一个ID
-
-
-<a id="idx-support-command" />
-
-### 2.ID生成器提供的命令
-
-1. 单个ID提取
-	getid
-2. 多个ID提取, 一次最多提取100个，超过则返回错误
-	mgetid	count
-
-<a id="idx-why-choose-redis" />
-
-
-### 3.为何选择redis做改造
-
-1. 生成ID不需要多线程模型，单线程即可，redis比较符合计算，因为单线程处理少了很多多线程的坑
-
-2. redis的协议已经封装好了的，并且现在所有的业务都使用该通用组件，只需要在php的redis扩展或
-      其他语言的扩展中加两个命令即可以很好的融合到业务代码中
-
-3. redis足够高效，因为本身ID生成器可能需要抗大量的并发，但这正是redis的特长
-
-
-<a id="idx-extreme-emergency-think" />
-
-### 4.极端问题考虑
+9.1 借毫秒警告
 
 对于ID生成器的算法的局限:
-
-	总长度63位，因为php的是有符号整数
 
 	42bit(millisecond) + server_id_range(2bit, 可配置) + shard_range(9bit，可配置) + random_range(10bit, 可配置) = 63 bit;
 
@@ -193,24 +318,3 @@ static long long generateId() {
 
 若使用过程中，经常出现该警告，说明qps > (2 ^ shard_range) * 1000; (如shard_range = 9，则会超过: 512000 qps才会出现借毫秒), 这时可以将random_range调小点，则可满足使用场景
 
-
-<a id="idx-statistics" />
-
-### 5.生成ID数据统计
-机器配置:
-
-    内存64G, 32核处理器, centos 7
-
-使用go语言做高并发请求，发送redis命令:
-
-单ID请求: 最大qps: 9w qps左右, 不会产生借毫秒
-
-```
-    redis-cli -h host -p port getid
-```
-
-多ID请求: 最大qps: 5000 qps左右，会产生借毫秒的情况
-
-```
-    redis-cli -h host -p port getid 100
-```
